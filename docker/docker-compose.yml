@@ -6,21 +6,24 @@ services:
     environment:
       - ENVIRONMENT=${ENVIRONMENT}
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
-      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET}
       - POSTGRES_HOST=${POSTGRES_HOST}
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    depends_on:
-      - postgres
+#    depends_on:
+#      - postgres
 
   postgres:
     extends:
       file: ./postgresql/docker-compose.yml
       service: postgres
+    labels:
+      - "environment=${ENVIRONMENT}"
+      - "pg_env=${PG_ENV:-disabled}"  # Only launches if PG_ENV is set
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 30s
       timeout: 10s
       retries: 5
+    deploy:
+      replicas: ${PG_ENV:-0}  # Prevents launching unless PG_ENV is set

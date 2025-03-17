@@ -10,8 +10,6 @@ services:
     environment:
       - ENVIRONMENT=${ENVIRONMENT}
       - DISCORD_TOKEN=${DISCORD_TOKEN}  # Discord bot token
-      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}  # Discord client ID
-      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET}  # Discord client secret
       - POSTGRES_HOST=${POSTGRES_HOST}  # PostgreSQL host
       - POSTGRES_DB=${POSTGRES_DB}  # PostgreSQL database name
       - POSTGRES_USER=${POSTGRES_USER}  # PostgreSQL user
