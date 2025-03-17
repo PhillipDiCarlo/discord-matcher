@@ -1,17 +1,11 @@
 services:
-  python-app:
+  bot:
     image: python:latest
     container_name: discord_matching_bot_python
     restart: always
-    working_dir: /app
+    working_dir: /app/src
     volumes:
-      - ../../:/app
+      - ../../src:/app/src  # Mounts only the src folder into the container
       - ../scripts/entrypoint.sh:/entrypoint.sh # Mounts the entrypoint script
-    environment:
-      - ENVIRONMENT=${ENVIRONMENT}
-      - DISCORD_TOKEN=${DISCORD_TOKEN}  # Discord bot token
-      - POSTGRES_HOST=${POSTGRES_HOST}  # PostgreSQL host
-      - POSTGRES_DB=${POSTGRES_DB}  # PostgreSQL database name
-      - POSTGRES_USER=${POSTGRES_USER}  # PostgreSQL user
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}  # PostgreSQL password
+      - ../../config/other_configs/requirements.txt:/app/requirements.txt # Mounts requirements.txt
     command: ["/bin/bash", "-c", "chmod +x /entrypoint.sh && /entrypoint.sh"]
