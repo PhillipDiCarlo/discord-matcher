@@ -1,14 +1,19 @@
-version: '3.8'
-
 services:
   python-app:
     image: python:latest
-    container_name: python_container
+    container_name: discord_matching_bot_python
     restart: always
     working_dir: /app
     volumes:
       - ../../:/app
-      - ../scripts/entrypoint.sh:/entrypoint.sh
+      - ../scripts/entrypoint.sh:/entrypoint.sh # Mounts the entrypoint script
     environment:
       - ENVIRONMENT=${ENVIRONMENT}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}  # Discord bot token
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}  # Discord client ID
+      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET}  # Discord client secret
+      - POSTGRES_HOST=${POSTGRES_HOST}  # PostgreSQL host
+      - POSTGRES_DB=${POSTGRES_DB}  # PostgreSQL database name
+      - POSTGRES_USER=${POSTGRES_USER}  # PostgreSQL user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}  # PostgreSQL password
     command: ["/bin/bash", "-c", "chmod +x /entrypoint.sh && /entrypoint.sh"]
