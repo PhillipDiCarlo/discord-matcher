@@ -30,12 +30,40 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 # ───────────────────────────────────────────────────────────────────────────────
 # Load environment variables and set up logging
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")  # e.g. "postgresql+asyncpg://user:password@host/matchmakingDB"
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST")
+POSTGRES_DB = os.getenv("POSTGRES_DB")
+POSTGRES_USER = os.getenv("POSTGRES_USER")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 LOGGING_LEVEL = os.getenv("LOGGING_LEVEL", "INFO").upper()
 
 logging.basicConfig(level=getattr(logging, LOGGING_LEVEL))
 logger = logging.getLogger(__name__)
+
+# Construct the database URL with asyncpg as the driver.
+DATABASE_URL = f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}/{POSTGRES_DB}"
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Bot initialization
+
+# Define intents (enabling members if needed for guild.get_member() functionality)
+intents = discord.Intents.default()
+intents.members = True
+
+class MyBot(discord.Client):
+    def __init__(self, *, intents: discord.Intents):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        # Sync slash commands on startup
+        await self.tree.sync()
+        logger.info("Slash commands synced.")
+
 
 # ───────────────────────────────────────────────────────────────────────────────
 # SQLAlchemy setup
@@ -412,12 +440,10 @@ async def on_ready():
 
 async def main():
     await init_db()
-    await bot.start(BOT_TOKEN)
+    await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
     try:
-        # Note: Although a command prefix is provided on bot initialization,
-        # only slash commands are implemented.
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot shutdown requested.")
