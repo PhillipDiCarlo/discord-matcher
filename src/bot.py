@@ -64,6 +64,8 @@ class MyBot(discord.Client):
         await self.tree.sync()
         logger.info("Slash commands synced.")
 
+# Initialize the bot
+bot = MyBot(intents=intents)
 
 # ───────────────────────────────────────────────────────────────────────────────
 # SQLAlchemy setup
