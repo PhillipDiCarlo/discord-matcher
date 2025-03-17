@@ -13,7 +13,7 @@ COPY ../../config/other_configs/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy the entrypoint script and make it executable
-COPY ../scripts/entrypoint.sh /entrypoint.sh
+COPY ../../docker/scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Set the entrypoint
