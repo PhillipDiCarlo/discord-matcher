@@ -209,7 +209,7 @@ async def get_next_candidate(session: AsyncSession, user: UserProfile) -> Option
     )
     result = await session.execute(stmt)
     candidates = result.scalars().all()
-    
+
     for candidate in candidates:
         if candidate.gender not in user.attracted_genders:
             continue

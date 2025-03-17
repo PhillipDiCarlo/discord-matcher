@@ -2,14 +2,11 @@
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
-# Print environment info
-echo "Running in $ENVIRONMENT mode"
+# Install dependencies
+pip install --no-cache-dir -r /app/requirements.txt
 
-# If any setup is needed based on environment
-if [ "$ENVIRONMENT" = "development" ]; then
-    echo "Development environment detected. Installing dependencies..."
-    pip install -r /app/requirements.txt
-fi
+# Navigate to the source directory
+cd /app/src
 
 # Execute the main application
 exec "$@"
