@@ -2,3 +2,4 @@ discord.py>=2.0
 SQLAlchemy>=1.4
 asyncpg
 python-dotenv
+psycopg2-binary
