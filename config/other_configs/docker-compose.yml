@@ -1,0 +1,14 @@
+services:
+  discord-bot:
+    build:
+      context: ../../
+      dockerfile: config/docker-img/Dockerfile-bot
+    image: discord-matchmaker-bot  # <-- Explicitly set image name
+    ports:
+      - "5003:5003"
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
