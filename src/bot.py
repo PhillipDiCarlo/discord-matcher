@@ -53,7 +53,7 @@ DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST
 # ─────────────────────────────────────────────
 # Synchronous SQLAlchemy setup
 engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
+Session = sessionmaker(bind=engine, expire_on_commit=False)
 Base = declarative_base()
 
 @contextmanager
@@ -163,6 +163,15 @@ def has_swiped(swiper_id: str, swiped_id: str) -> bool:
         result = session.query(Swipe).filter_by(swiper_id=swiper_id, swiped_id=swiped_id).first()
         return result is not None
 
+def has_right_swiped(swiper_id: str, swiped_id: str) -> bool:
+    with session_scope() as session:
+        result = session.query(Swipe).filter_by(
+            swiper_id=swiper_id,
+            swiped_id=swiped_id,
+            right_swipe=True
+        ).first()
+        return result is not None
+
 def mark_as_matched(user1_id: str, user2_id: str):
     with session_scope() as session:
         profile1 = session.query(UserProfile).filter_by(discord_id=user1_id).first()
@@ -172,20 +181,28 @@ def mark_as_matched(user1_id: str, user2_id: str):
             profile2.matched_with = profile1.discord_id
 
 def get_next_candidate(user: UserProfile) -> Optional[UserProfile]:
+    # Copy needed attributes from the detached instance
+    user_id = user.discord_id
+    min_age = user.preferred_min_age
+    max_age = user.preferred_max_age
+    looking_for = user.looking_for
+    attracted_genders = user.attracted_genders
+    user_gender = user.gender
+
     with session_scope() as session:
         candidates = session.query(UserProfile).filter(
-            UserProfile.discord_id != user.discord_id,
+            UserProfile.discord_id != user_id,
             UserProfile.matched_with.is_(None),
-            UserProfile.age >= user.preferred_min_age,
-            UserProfile.age <= user.preferred_max_age,
-            UserProfile.looking_for == user.looking_for
+            UserProfile.age >= min_age,
+            UserProfile.age <= max_age,
+            UserProfile.looking_for == looking_for
         ).all()
         for candidate in candidates:
-            if candidate.gender not in user.attracted_genders:
+            if candidate.gender not in attracted_genders:
                 continue
-            if user.gender not in candidate.attracted_genders:
+            if user_gender not in candidate.attracted_genders:
                 continue
-            if has_swiped(user.discord_id, candidate.discord_id):
+            if has_swiped(user_id, candidate.discord_id):
                 continue
             return candidate
     return None
@@ -210,7 +227,6 @@ bot = MyBot(intents=intents)
 # ─────────────────────────────────────────────
 # UI Components for Profile Creation and Update
 
-# Creation Modal: Collect initial numeric and text info
 class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
     current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
     bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
@@ -241,7 +257,6 @@ class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
         view = ProfileSelectView(age=age, bio=bio_val, min_age=min_age_val, max_age=max_age_val)
         await interaction.response.send_message("Now please select your additional profile options:", view=view, ephemeral=True)
 
-# Creation Select View: Collect remaining options for creation
 class LookingForSelect(Select):
     def __init__(self):
         options = [
@@ -315,7 +330,6 @@ class ProfileSelectView(View):
         await interaction.response.send_message("Profile created successfully!", ephemeral=True)
         self.stop()
 
-# Update Modal: Prepopulate current numeric/text info for updating
 class UpdateProfileModal(Modal, title="Update Your Profile Information"):
     current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
     bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
@@ -365,7 +379,6 @@ class UpdateProfileModal(Modal, title="Update Your Profile Information"):
         )
         await interaction.response.send_message("Now please update your additional profile options:", view=view, ephemeral=True)
 
-# Update Select View: Prepopulate current select options for updating
 class UpdateLookingForSelect(Select):
     def __init__(self, default: str = None):
         options = [
@@ -445,45 +458,106 @@ class UpdateProfileSelectView(View):
 # Standard Matching View
 
 class MatchView(View):
-    def __init__(self, user: UserProfile):
+    def __init__(self, user_id: str):
         super().__init__(timeout=180)
-        self.user = user
+        self.user_id = user_id  
         self.current_candidate: Optional[UserProfile] = None
-    
+
     async def update_candidate(self, interaction: discord.Interaction):
-        candidate = get_next_candidate(self.user)
-        if candidate is None:
-            await interaction.response.edit_message(content="You've run out of swipes for now. Check back tomorrow!", embed=None, view=None)
+        user = get_user_profile(self.user_id)
+        if not user:
+            try:
+                await interaction.edit_original_response(content="User profile not found.", embed=None, view=None)
+            except discord.NotFound:
+                try:
+                    await interaction.followup.send("User profile not found.", ephemeral=True)
+                except discord.NotFound:
+                    logger.error("Failed to send followup message: Unknown Webhook (User profile not found)")
             self.stop()
             return
+
+        candidate = get_next_candidate(user)
+        if candidate is None:
+            try:
+                await interaction.edit_original_response(
+                    content="You've run out of swipes for now. Check back tomorrow!",
+                    embed=None,
+                    view=None
+                )
+            except discord.NotFound:
+                try:
+                    await interaction.followup.send("You've run out of swipes for now. Check back tomorrow!", ephemeral=True)
+                except discord.NotFound:
+                    logger.error("Failed to send followup message: Unknown Webhook (No candidates)")
+            self.stop()
+            return
+
         self.current_candidate = candidate
+
+        # Fetch the candidate's Discord User object
+        candidate_user = interaction.client.get_user(candidate.discord_id)
+        if candidate_user is None:
+            candidate_user = await interaction.client.fetch_user(candidate.discord_id)
+
         embed = discord.Embed(title="Potential Match", color=discord.Color.blue())
         embed.add_field(name="Age", value=str(candidate.age))
         embed.add_field(name="Gender", value=candidate.gender.value)
         embed.add_field(name="Looking for", value=candidate.looking_for)
         embed.add_field(name="Bio", value=candidate.bio, inline=False)
-        embed.set_author(name=candidate.discord_id)
-        await interaction.response.edit_message(content="Swipe right or left:", embed=embed, view=self)
-    
-    @discord.ui.button(label="Swipe Right", style=discord.ButtonStyle.green)
-    async def swipe_right(self, interaction: discord.Interaction, button: Button):
-        if not self.current_candidate:
-            await interaction.response.send_message("No candidate available.", ephemeral=True)
-            return
-        record_swipe(self.user.discord_id, self.current_candidate.discord_id, True)
-        if has_swiped(self.current_candidate.discord_id, self.user.discord_id):
-            mark_as_matched(self.user.discord_id, self.current_candidate.discord_id)
-            await interaction.response.edit_message(content=f"It's a match with {self.current_candidate.discord_id}!", embed=None, view=None)
-            self.stop()
-            return
-        await self.update_candidate(interaction)
-    
+        embed.set_author(
+            name=candidate_user.display_name,
+            icon_url=candidate_user.avatar.url if candidate_user.avatar else candidate_user.default_avatar.url,
+            url=f"https://discord.com/users/{candidate.discord_id}"
+        )
+        embed.set_thumbnail(url=candidate_user.avatar.url if candidate_user.avatar else candidate_user.default_avatar.url)
+
+        try:
+            await interaction.edit_original_response(content="Swipe right or left:", embed=embed, view=self)
+        except discord.NotFound:
+            try:
+                await interaction.followup.send(content="Swipe right or left:", embed=embed, view=self, ephemeral=True)
+            except discord.NotFound:
+                logger.error("Failed to send followup message: Unknown Webhook (Editing response)")
+
     @discord.ui.button(label="Swipe Left", style=discord.ButtonStyle.red)
     async def swipe_left(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
         if not self.current_candidate:
-            await interaction.response.send_message("No candidate available.", ephemeral=True)
+            await interaction.followup.send("No candidate available.", ephemeral=True)
             return
-        record_swipe(self.user.discord_id, self.current_candidate.discord_id, False)
+        record_swipe(self.user_id, self.current_candidate.discord_id, False)
+        await self.update_candidate(interaction)
+
+    @discord.ui.button(label="Swipe Right", style=discord.ButtonStyle.green)
+    async def swipe_right(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer(ephemeral=True)
+        if not self.current_candidate:
+            await interaction.followup.send("No candidate available.", ephemeral=True)
+            return
+        record_swipe(self.user_id, self.current_candidate.discord_id, True)
+        # Check if candidate swiped right on you.
+        if has_right_swiped(self.current_candidate.discord_id, self.user_id):
+            mark_as_matched(self.user_id, self.current_candidate.discord_id)
+            match_message = f"It's a match with <@{self.current_candidate.discord_id}>!"
+            try:
+                await interaction.edit_original_response(content=match_message, embed=None, view=None)
+            except discord.NotFound:
+                try:
+                    await interaction.followup.send(match_message, ephemeral=True)
+                except discord.NotFound:
+                    logger.error("Failed to send followup message: Unknown Webhook (Swipe Right match)")
+            self.stop()
+
+            # Send DM to both users.
+            try:
+                user_dm = await interaction.client.fetch_user(self.user_id)
+                candidate_dm = await interaction.client.fetch_user(self.current_candidate.discord_id)
+                server_name = interaction.guild.name if interaction.guild else "this server"
+                await user_dm.send(f"You matched with {candidate_dm.display_name} in {server_name}!")
+                await candidate_dm.send(f"You matched with {user_dm.display_name} in {server_name}!")
+            except Exception as e:
+                logger.error(f"Failed to send DM on match: {e}")
+            return
         await self.update_candidate(interaction)
 
 # ─────────────────────────────────────────────
@@ -529,14 +603,32 @@ async def delete_profile(interaction: discord.Interaction):
 
 @bot.tree.command(name="start_matching", description="Start swiping for matches.")
 async def start_matching(interaction: discord.Interaction):
-    user = get_user_profile(str(interaction.user.id))
-    if not user:
-        await interaction.response.send_message("You must create a profile first using /create_profile.", ephemeral=True)
-        return
-    if user.matched_with:
-        await interaction.response.send_message("You are already matched. Unmatch first to start swiping.", ephemeral=True)
-        return
-    view = MatchView(user)
+    with session_scope() as session:
+        user_instance = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id)).first()
+        if not user_instance:
+            await interaction.response.send_message(
+                "You must create a profile first using /create_profile.",
+                ephemeral=True
+            )
+            return
+        if user_instance.matched_with:
+            await interaction.response.send_message(
+                "You are already matched. Unmatch first to start swiping.",
+                ephemeral=True
+            )
+            return
+
+        candidate = get_next_candidate(user_instance)
+        if candidate is None:
+            await interaction.response.send_message(
+                "No new candidates found right now. Check back later!",
+                ephemeral=True
+            )
+            return
+
+        user_id = user_instance.discord_id
+
+    view = MatchView(user_id)
     await interaction.response.send_message("Fetching a potential match...", view=view, ephemeral=True)
     await view.update_candidate(interaction)
 
