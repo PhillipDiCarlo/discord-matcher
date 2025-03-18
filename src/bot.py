@@ -75,9 +75,22 @@ class GenderEnum(enum.Enum):
     Male = "Male"
     Female = "Female"
     Trans = "Trans"
-    NonBinary = "Non-Binary"
+    NonBinary = "NonBinary"  # stored value in the database
+
+    @property
+    def display(self) -> str:
+        if self == GenderEnum.NonBinary:
+            return "Non-Binary"
+        return self.value
 
 allowed_genders = (GenderEnum.Male, GenderEnum.Female, GenderEnum.Trans, GenderEnum.NonBinary)
+
+# Helper function to convert raw string to GenderEnum
+def to_gender_enum(value: str) -> GenderEnum:
+    # Accept both "nonbinary" and "non-binary" (case insensitive)
+    if value.lower() in ("nonbinary", "non-binary"):
+        return GenderEnum.NonBinary
+    return GenderEnum(value)
 
 class UserProfile(Base):
     __tablename__ = 'user_profiles'
@@ -116,8 +129,8 @@ def get_user_profile(discord_id: str) -> Optional[UserProfile]:
 
 def create_user_profile(discord_id: str, age: int, gender: str, bio: str, looking_for: str,
                         attracted_genders: List[str], preferred_min_age: int, preferred_max_age: int) -> UserProfile:
-    gender_enum_val = GenderEnum(gender)
-    attracted_enum_vals = [GenderEnum(item) for item in attracted_genders]
+    gender_enum_val = to_gender_enum(gender)
+    attracted_enum_vals = [to_gender_enum(item) for item in attracted_genders]
     profile = UserProfile(
         discord_id=discord_id,
         age=age,
@@ -138,7 +151,12 @@ def update_user_profile(discord_id: str, **kwargs) -> bool:
         if not profile:
             return False
         for key, value in kwargs.items():
-            setattr(profile, key, value)
+            if key == "gender" and value:
+                setattr(profile, key, to_gender_enum(value))
+            elif key == "attracted_genders" and value:
+                setattr(profile, key, [to_gender_enum(item) for item in value])
+            else:
+                setattr(profile, key, value)
         return True
 
 def delete_user_profile(discord_id: str) -> bool:
@@ -181,7 +199,6 @@ def mark_as_matched(user1_id: str, user2_id: str):
             profile2.matched_with = profile1.discord_id
 
 def get_next_candidate(user: UserProfile) -> Optional[UserProfile]:
-    # Copy needed attributes from the detached instance
     user_id = user.discord_id
     min_age = user.preferred_min_age
     max_age = user.preferred_max_age
@@ -208,7 +225,7 @@ def get_next_candidate(user: UserProfile) -> Optional[UserProfile]:
     return None
 
 # ─────────────────────────────────────────────
-# Discord Bot Setup (Synchronous DB usage)
+# Discord Bot Setup
 
 intents = discord.Intents.default()
 intents.members = True
@@ -501,14 +518,16 @@ class MatchView(View):
 
         self.current_candidate = candidate
 
-        # Fetch the candidate's Discord User object
         candidate_user = interaction.client.get_user(candidate.discord_id)
         if candidate_user is None:
             candidate_user = await interaction.client.fetch_user(candidate.discord_id)
 
+        # Display "Non-Binary" if the stored value is "NonBinary"
+        display_gender = "Non-Binary" if candidate.gender.value == "NonBinary" else candidate.gender.value
+
         embed = discord.Embed(title="Potential Match", color=discord.Color.blue())
         embed.add_field(name="Age", value=str(candidate.age))
-        embed.add_field(name="Gender", value=candidate.gender.value)
+        embed.add_field(name="Gender", value=display_gender)
         embed.add_field(name="Looking for", value=candidate.looking_for)
         embed.add_field(name="Bio", value=candidate.bio, inline=False)
         embed.set_author(
@@ -542,7 +561,6 @@ class MatchView(View):
             await interaction.followup.send("No candidate available.", ephemeral=True)
             return
         record_swipe(self.user_id, self.current_candidate.discord_id, True)
-        # Check if candidate swiped right on you.
         if has_right_swiped(self.current_candidate.discord_id, self.user_id):
             mark_as_matched(self.user_id, self.current_candidate.discord_id)
             match_message = f"It's a match with <@{self.current_candidate.discord_id}>!"
@@ -554,8 +572,6 @@ class MatchView(View):
                 except discord.NotFound:
                     logger.error("Failed to send followup message: Unknown Webhook (Swipe Right match)")
             self.stop()
-
-            # Send DM to both users with a clickable button.
             try:
                 user_dm = await interaction.client.fetch_user(self.user_id)
                 candidate_dm = await interaction.client.fetch_user(self.current_candidate.discord_id)
@@ -564,10 +580,10 @@ class MatchView(View):
                     content=f"You matched with <@{self.current_candidate.discord_id}> in {server_name}!",
                     view=ProfileButtonView(self.current_candidate.discord_id)
                 )
-                # await candidate_dm.send(
-                #     content=f"You matched with <@{self.user_id}> in {server_name}!",
-                #     view=ProfileButtonView(self.user_id)
-                # )
+                await candidate_dm.send(
+                    content=f"You matched with <@{self.user_id}> in {server_name}!",
+                    view=ProfileButtonView(self.user_id)
+                )
             except Exception as e:
                 logger.error(f"Failed to send DM on match: {e}")
             return
@@ -652,13 +668,11 @@ async def unmatch(interaction: discord.Interaction):
         if not user or not user.matched_with:
             await interaction.response.send_message("You are not currently matched with anyone.", ephemeral=True)
             return
-        # Query for the partner user
         partner = session.query(UserProfile).filter_by(discord_id=user.matched_with).first()
-        # Clear matches for both users
         user.matched_with = None
         if partner:
             partner.matched_with = None
-    await interaction.response.send_message("Match removed. You are now back in the matching pool.", ephemeral=True)
+    await interaction.response.send_message("Match removed. Both users are now back in the matching pool.", ephemeral=True)
 
 @bot.event
 async def on_ready():
