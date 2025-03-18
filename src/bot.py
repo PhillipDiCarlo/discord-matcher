@@ -20,7 +20,8 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     func,
-    Enum as SQLAlchemyEnum
+    Enum as SQLAlchemyEnum,
+    UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -70,49 +71,49 @@ def session_scope():
         session.close()
 
 # ─────────────────────────────────────────────
-# Define a Python Enum for gender values
+# Define a Python Enum for gender values.
+# We now store the gender as a string without the hyphen ("NonBinary").
 class GenderEnum(enum.Enum):
     Male = "Male"
     Female = "Female"
     Trans = "Trans"
-    NonBinary = "NonBinary"  # stored value in the database
-
-    @property
-    def display(self) -> str:
-        if self == GenderEnum.NonBinary:
-            return "Non-Binary"
-        return self.value
+    NonBinary = "NonBinary"  # Stored without hyphen in DB
 
 allowed_genders = (GenderEnum.Male, GenderEnum.Female, GenderEnum.Trans, GenderEnum.NonBinary)
 
-# Helper function to convert raw string to GenderEnum
+# Helper function to convert raw string to GenderEnum.
+# It accepts both "NonBinary" and "Non-Binary" as input.
 def to_gender_enum(value: str) -> GenderEnum:
-    # Accept both "nonbinary" and "non-binary" (case insensitive)
     if value.lower() in ("nonbinary", "non-binary"):
         return GenderEnum.NonBinary
     return GenderEnum(value)
 
+# ─────────────────────────────────────────────
+# Update the models to be guild-specific.
+
 class UserProfile(Base):
     __tablename__ = 'user_profiles'
     id = Column(Integer, primary_key=True)
-    discord_id = Column(String, unique=True, nullable=False)
+    discord_id = Column(String, nullable=False)
+    guild_id = Column(String, nullable=False)
+    __table_args__ = (UniqueConstraint('discord_id', 'guild_id', name='uix_discord_guild'),)
     age = Column(Integer, nullable=False)
     gender = Column(SQLAlchemyEnum(GenderEnum, name="gender_enum"), nullable=False)
     bio = Column(Text, nullable=False)
     looking_for = Column(String, nullable=False)
-    # Define attracted_genders as an ARRAY of our GenderEnum
     attracted_genders = Column(ARRAY(SQLAlchemyEnum(GenderEnum, name="gender_enum")), nullable=False)
     preferred_min_age = Column(Integer, nullable=False, default=18)
     preferred_max_age = Column(Integer, nullable=False, default=100)
-    matched_with = Column(String, nullable=True)
+    matched_with = Column(String, nullable=True)  # This stores the discord_id of the matched profile.
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 class Swipe(Base):
     __tablename__ = 'swipes'
     id = Column(Integer, primary_key=True)
-    swiper_id = Column(String, ForeignKey("user_profiles.discord_id", ondelete="CASCADE"), nullable=False)
-    swiped_id = Column(String, ForeignKey("user_profiles.discord_id", ondelete="CASCADE"), nullable=False)
+    guild_id = Column(String, nullable=False)  # New column to scope swipes to a guild.
+    swiper_id = Column(String, nullable=False)  # Reference to the user's discord_id.
+    swiped_id = Column(String, nullable=False)
     right_swipe = Column(Boolean, nullable=False)
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -123,16 +124,17 @@ logger.info("Database tables created.")
 # ─────────────────────────────────────────────
 # Synchronous Database Helper Functions
 
-def get_user_profile(discord_id: str) -> Optional[UserProfile]:
+def get_user_profile(discord_id: str, guild_id: str) -> Optional[UserProfile]:
     with session_scope() as session:
-        return session.query(UserProfile).filter_by(discord_id=discord_id).first()
+        return session.query(UserProfile).filter_by(discord_id=discord_id, guild_id=guild_id).first()
 
-def create_user_profile(discord_id: str, age: int, gender: str, bio: str, looking_for: str,
+def create_user_profile(discord_id: str, guild_id: str, age: int, gender: str, bio: str, looking_for: str,
                         attracted_genders: List[str], preferred_min_age: int, preferred_max_age: int) -> UserProfile:
     gender_enum_val = to_gender_enum(gender)
     attracted_enum_vals = [to_gender_enum(item) for item in attracted_genders]
     profile = UserProfile(
         discord_id=discord_id,
+        guild_id=guild_id,
         age=age,
         gender=gender_enum_val,
         bio=bio,
@@ -145,9 +147,9 @@ def create_user_profile(discord_id: str, age: int, gender: str, bio: str, lookin
         session.add(profile)
     return profile
 
-def update_user_profile(discord_id: str, **kwargs) -> bool:
+def update_user_profile(discord_id: str, guild_id: str, **kwargs) -> bool:
     with session_scope() as session:
-        profile = session.query(UserProfile).filter_by(discord_id=discord_id).first()
+        profile = session.query(UserProfile).filter_by(discord_id=discord_id, guild_id=guild_id).first()
         if not profile:
             return False
         for key, value in kwargs.items():
@@ -159,16 +161,17 @@ def update_user_profile(discord_id: str, **kwargs) -> bool:
                 setattr(profile, key, value)
         return True
 
-def delete_user_profile(discord_id: str) -> bool:
+def delete_user_profile(discord_id: str, guild_id: str) -> bool:
     with session_scope() as session:
-        profile = session.query(UserProfile).filter_by(discord_id=discord_id).first()
+        profile = session.query(UserProfile).filter_by(discord_id=discord_id, guild_id=guild_id).first()
         if not profile:
             return False
         session.delete(profile)
         return True
 
-def record_swipe(swiper_id: str, swiped_id: str, right_swipe: bool):
+def record_swipe(swiper_id: str, swiped_id: str, guild_id: str, right_swipe: bool):
     swipe = Swipe(
+        guild_id=guild_id,
         swiper_id=swiper_id,
         swiped_id=swiped_id,
         right_swipe=right_swipe
@@ -176,30 +179,32 @@ def record_swipe(swiper_id: str, swiped_id: str, right_swipe: bool):
     with session_scope() as session:
         session.add(swipe)
 
-def has_swiped(swiper_id: str, swiped_id: str) -> bool:
+def has_swiped(swiper_id: str, swiped_id: str, guild_id: str) -> bool:
     with session_scope() as session:
-        result = session.query(Swipe).filter_by(swiper_id=swiper_id, swiped_id=swiped_id).first()
+        result = session.query(Swipe).filter_by(swiper_id=swiper_id, swiped_id=swiped_id, guild_id=guild_id).first()
         return result is not None
 
-def has_right_swiped(swiper_id: str, swiped_id: str) -> bool:
+def has_right_swiped(swiper_id: str, swiped_id: str, guild_id: str) -> bool:
     with session_scope() as session:
         result = session.query(Swipe).filter_by(
             swiper_id=swiper_id,
             swiped_id=swiped_id,
+            guild_id=guild_id,
             right_swipe=True
         ).first()
         return result is not None
 
-def mark_as_matched(user1_id: str, user2_id: str):
+def mark_as_matched(user1_id: str, user2_id: str, guild_id: str):
     with session_scope() as session:
-        profile1 = session.query(UserProfile).filter_by(discord_id=user1_id).first()
-        profile2 = session.query(UserProfile).filter_by(discord_id=user2_id).first()
+        profile1 = session.query(UserProfile).filter_by(discord_id=user1_id, guild_id=guild_id).first()
+        profile2 = session.query(UserProfile).filter_by(discord_id=user2_id, guild_id=guild_id).first()
         if profile1 and profile2:
             profile1.matched_with = profile2.discord_id
             profile2.matched_with = profile1.discord_id
 
 def get_next_candidate(user: UserProfile) -> Optional[UserProfile]:
     user_id = user.discord_id
+    guild_id = user.guild_id
     min_age = user.preferred_min_age
     max_age = user.preferred_max_age
     looking_for = user.looking_for
@@ -209,6 +214,7 @@ def get_next_candidate(user: UserProfile) -> Optional[UserProfile]:
     with session_scope() as session:
         candidates = session.query(UserProfile).filter(
             UserProfile.discord_id != user_id,
+            UserProfile.guild_id == guild_id,
             UserProfile.matched_with.is_(None),
             UserProfile.age >= min_age,
             UserProfile.age <= max_age,
@@ -219,7 +225,7 @@ def get_next_candidate(user: UserProfile) -> Optional[UserProfile]:
                 continue
             if user_gender not in candidate.attracted_genders:
                 continue
-            if has_swiped(user_id, candidate.discord_id):
+            if has_swiped(user_id, candidate.discord_id, guild_id):
                 continue
             return candidate
     return None
@@ -331,11 +337,14 @@ class ProfileSelectView(View):
         if not self.looking_for or not self.gender or not self.attracted:
             await interaction.response.send_message("Please complete all selections before confirming.", ephemeral=True)
             return
-        if get_user_profile(str(interaction.user.id)):
+        # Obtain guild id from the interaction.
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        if get_user_profile(str(interaction.user.id), guild_id):
             await interaction.response.send_message("You already have a profile. Use /update_profile to modify it.", ephemeral=True)
             return
         create_user_profile(
             discord_id=str(interaction.user.id),
+            guild_id=guild_id,
             age=self.age,
             gender=self.gender,
             bio=self.bio,
@@ -455,8 +464,10 @@ class UpdateProfileSelectView(View):
         if not self.looking_for or not self.gender or not self.attracted:
             await interaction.response.send_message("Please complete all selections before confirming.", ephemeral=True)
             return
+        guild_id = str(interaction.guild.id) if interaction.guild else None
         updated = update_user_profile(
             str(interaction.user.id),
+            guild_id=guild_id,
             age=self.age,
             bio=self.bio,
             looking_for=self.looking_for,
@@ -482,13 +493,14 @@ class ProfileButtonView(View):
 # Standard Matching View
 
 class MatchView(View):
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str, guild_id: str):
         super().__init__(timeout=180)
         self.user_id = user_id  
+        self.guild_id = guild_id
         self.current_candidate: Optional[UserProfile] = None
 
     async def update_candidate(self, interaction: discord.Interaction):
-        user = get_user_profile(self.user_id)
+        user = get_user_profile(self.user_id, self.guild_id)
         if not user:
             try:
                 await interaction.edit_original_response(content="User profile not found.", embed=None, view=None)
@@ -522,7 +534,6 @@ class MatchView(View):
         if candidate_user is None:
             candidate_user = await interaction.client.fetch_user(candidate.discord_id)
 
-        # Display "Non-Binary" if the stored value is "NonBinary"
         display_gender = "Non-Binary" if candidate.gender.value == "NonBinary" else candidate.gender.value
 
         embed = discord.Embed(title="Potential Match", color=discord.Color.blue())
@@ -551,7 +562,7 @@ class MatchView(View):
         if not self.current_candidate:
             await interaction.followup.send("No candidate available.", ephemeral=True)
             return
-        record_swipe(self.user_id, self.current_candidate.discord_id, False)
+        record_swipe(self.user_id, self.current_candidate.discord_id, self.guild_id, False)
         await self.update_candidate(interaction)
 
     @discord.ui.button(label="Swipe Right", style=discord.ButtonStyle.green)
@@ -560,9 +571,9 @@ class MatchView(View):
         if not self.current_candidate:
             await interaction.followup.send("No candidate available.", ephemeral=True)
             return
-        record_swipe(self.user_id, self.current_candidate.discord_id, True)
-        if has_right_swiped(self.current_candidate.discord_id, self.user_id):
-            mark_as_matched(self.user_id, self.current_candidate.discord_id)
+        record_swipe(self.user_id, self.current_candidate.discord_id, self.guild_id, True)
+        if has_right_swiped(self.current_candidate.discord_id, self.user_id, self.guild_id):
+            mark_as_matched(self.user_id, self.current_candidate.discord_id, self.guild_id)
             match_message = f"It's a match with <@{self.current_candidate.discord_id}>!"
             try:
                 await interaction.edit_original_response(content=match_message, embed=None, view=None)
@@ -598,12 +609,13 @@ async def create_profile(interaction: discord.Interaction):
 
 @bot.tree.command(name="update_profile", description="Update your dating profile.")
 async def update_profile(interaction: discord.Interaction):
-    profile = get_user_profile(str(interaction.user.id))
+    guild_id = str(interaction.guild.id) if interaction.guild else None
+    profile = get_user_profile(str(interaction.user.id), guild_id)
     if not profile:
         await interaction.response.send_message("You don't have a profile yet. Use /create_profile first.", ephemeral=True)
         return
     with session_scope() as session:
-        profile = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id)).first()
+        profile = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id), guild_id=guild_id).first()
         default_age = profile.age
         default_bio = profile.bio
         default_min_age = profile.preferred_min_age
@@ -624,7 +636,8 @@ async def update_profile(interaction: discord.Interaction):
 
 @bot.tree.command(name="delete_profile", description="Delete your dating profile.")
 async def delete_profile(interaction: discord.Interaction):
-    deleted = delete_user_profile(str(interaction.user.id))
+    guild_id = str(interaction.guild.id) if interaction.guild else None
+    deleted = delete_user_profile(str(interaction.user.id), guild_id)
     if not deleted:
         await interaction.response.send_message("No profile found to delete.", ephemeral=True)
     else:
@@ -632,8 +645,9 @@ async def delete_profile(interaction: discord.Interaction):
 
 @bot.tree.command(name="start_matching", description="Start swiping for matches.")
 async def start_matching(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id) if interaction.guild else None
     with session_scope() as session:
-        user_instance = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id)).first()
+        user_instance = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id), guild_id=guild_id).first()
         if not user_instance:
             await interaction.response.send_message(
                 "You must create a profile first using /create_profile.",
@@ -657,18 +671,19 @@ async def start_matching(interaction: discord.Interaction):
 
         user_id = user_instance.discord_id
 
-    view = MatchView(user_id)
+    view = MatchView(user_id, guild_id)
     await interaction.response.send_message("Fetching a potential match...", view=view, ephemeral=True)
     await view.update_candidate(interaction)
 
 @bot.tree.command(name="unmatch", description="Unmatch from your current match.")
 async def unmatch(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id) if interaction.guild else None
     with session_scope() as session:
-        user = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id)).first()
+        user = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id), guild_id=guild_id).first()
         if not user or not user.matched_with:
             await interaction.response.send_message("You are not currently matched with anyone.", ephemeral=True)
             return
-        partner = session.query(UserProfile).filter_by(discord_id=user.matched_with).first()
+        partner = session.query(UserProfile).filter_by(discord_id=user.matched_with, guild_id=guild_id).first()
         user.matched_with = None
         if partner:
             partner.matched_with = None
