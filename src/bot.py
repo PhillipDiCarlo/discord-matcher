@@ -652,7 +652,12 @@ async def unmatch(interaction: discord.Interaction):
         if not user or not user.matched_with:
             await interaction.response.send_message("You are not currently matched with anyone.", ephemeral=True)
             return
+        # Query for the partner user
+        partner = session.query(UserProfile).filter_by(discord_id=user.matched_with).first()
+        # Clear matches for both users
         user.matched_with = None
+        if partner:
+            partner.matched_with = None
     await interaction.response.send_message("Match removed. You are now back in the matching pool.", ephemeral=True)
 
 @bot.event
