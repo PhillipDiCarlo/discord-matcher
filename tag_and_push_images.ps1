@@ -16,16 +16,16 @@ $menu = @"
 
 Write-Host "Select an option to tag and upload:"
 Write-Host $menu
-$choice = Read-Host "Enter your choice (0-3)"
+$choice = Read-Host "Enter your choice (0-1)"
 
 function TagAndPush($imageName, $version) {
 
-    docker tag "$imageName" "italiandogs/matchmakerBot-${imageName}:$version"
-    docker tag "$imageName" "italiandogs/matchmakerBot-${imageName}:latest"
+    docker tag "$imageName" "italiandogs/matchmakerbot-${imageName}:$version"
+    docker tag "$imageName" "italiandogs/matchmakerbot-${imageName}:latest"
     Write-Output "Tagged $imageName with $version and latest"
 
-    docker push "italiandogs/matchmakerBot-${imageName}:$version"
-    docker push "italiandogs/matchmakerBot-${imageName}:latest"
+    docker push "italiandogs/matchmakerbot-${imageName}:$version"
+    docker push "italiandogs/matchmakerbot-${imageName}:latest"
     Write-Output "Pushed $imageName with $version and latest"
 }
 
@@ -41,7 +41,7 @@ function BuildDockerImages() {
     switch ($build) {
         1 {
             Write-Host "Building Docker images..."
-            docker-compose -f .\docker\docker-compose.yml build
+            docker-compose -f .\config\other_configs\docker-compose.yml build
             Write-Output "Build completed."
         }
         2 {
@@ -60,7 +60,7 @@ BuildDockerImages
 # Switch case to handle the user's choice of Docker images to tag and push
 switch ($choice) {
     1 {
-        TagAndPush "discord-bot" $version
+        TagAndPush "discord-matchmaker-bot" $version
     }
     # 3 {
     #     TagAndPush "discord-bot" $version
