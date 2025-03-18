@@ -455,6 +455,13 @@ class UpdateProfileSelectView(View):
         self.stop()
 
 # ─────────────────────────────────────────────
+# A simple view for DM messages with a button to view profile.
+class ProfileButtonView(View):
+    def __init__(self, user_id: str):
+        super().__init__(timeout=None)
+        self.add_item(Button(label="View Profile", url=f"https://discord.com/users/{user_id}"))
+
+# ─────────────────────────────────────────────
 # Standard Matching View
 
 class MatchView(View):
@@ -548,13 +555,19 @@ class MatchView(View):
                     logger.error("Failed to send followup message: Unknown Webhook (Swipe Right match)")
             self.stop()
 
-            # Send DM to both users.
+            # Send DM to both users with a clickable button.
             try:
                 user_dm = await interaction.client.fetch_user(self.user_id)
                 candidate_dm = await interaction.client.fetch_user(self.current_candidate.discord_id)
                 server_name = interaction.guild.name if interaction.guild else "this server"
-                await user_dm.send(f"You matched with {candidate_dm.display_name} in {server_name}!")
-                await candidate_dm.send(f"You matched with {user_dm.display_name} in {server_name}!")
+                await user_dm.send(
+                    content=f"You matched with <@{self.current_candidate.discord_id}> in {server_name}!",
+                    view=ProfileButtonView(self.current_candidate.discord_id)
+                )
+                # await candidate_dm.send(
+                #     content=f"You matched with <@{self.user_id}> in {server_name}!",
+                #     view=ProfileButtonView(self.user_id)
+                # )
             except Exception as e:
                 logger.error(f"Failed to send DM on match: {e}")
             return
