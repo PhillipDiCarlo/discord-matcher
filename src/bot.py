@@ -210,7 +210,7 @@ bot = MyBot(intents=intents)
 # ─────────────────────────────────────────────
 # UI Components for Profile Creation and Update
 
-# Creation Modal: Collect numeric and text inputs
+# Creation Modal: Collect initial numeric and text info
 class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
     current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
     bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
@@ -225,11 +225,23 @@ class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
         except ValueError:
             await interaction.response.send_message("Age fields must be valid numbers.", ephemeral=True)
             return
+        if age < 18 or age > 100:
+            await interaction.response.send_message("Your age must be between 18 and 100.", ephemeral=True)
+            return
+        if min_age_val < 18:
+            await interaction.response.send_message("Minimum preferred age must be at least 18.", ephemeral=True)
+            return
+        if max_age_val > 100:
+            await interaction.response.send_message("Maximum preferred age must be 100 or less.", ephemeral=True)
+            return
+        if min_age_val > max_age_val:
+            await interaction.response.send_message("Minimum preferred age cannot be greater than maximum preferred age.", ephemeral=True)
+            return
         bio_val = self.bio.value
         view = ProfileSelectView(age=age, bio=bio_val, min_age=min_age_val, max_age=max_age_val)
         await interaction.response.send_message("Now please select your additional profile options:", view=view, ephemeral=True)
 
-# Creation Select View: Collect Looking For, Gender, and Attracted options
+# Creation Select View: Collect remaining options for creation
 class LookingForSelect(Select):
     def __init__(self):
         options = [
@@ -303,7 +315,7 @@ class ProfileSelectView(View):
         await interaction.response.send_message("Profile created successfully!", ephemeral=True)
         self.stop()
 
-# Update Modal: Prepopulate current numeric/text info
+# Update Modal: Prepopulate current numeric/text info for updating
 class UpdateProfileModal(Modal, title="Update Your Profile Information"):
     current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
     bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
@@ -329,6 +341,18 @@ class UpdateProfileModal(Modal, title="Update Your Profile Information"):
         except ValueError:
             await interaction.response.send_message("Age fields must be valid numbers.", ephemeral=True)
             return
+        if age < 18 or age > 100:
+            await interaction.response.send_message("Your age must be between 18 and 100.", ephemeral=True)
+            return
+        if min_age_val < 18:
+            await interaction.response.send_message("Minimum preferred age must be at least 18.", ephemeral=True)
+            return
+        if max_age_val > 100:
+            await interaction.response.send_message("Maximum preferred age must be 100 or less.", ephemeral=True)
+            return
+        if min_age_val > max_age_val:
+            await interaction.response.send_message("Minimum preferred age cannot be greater than maximum preferred age.", ephemeral=True)
+            return
         bio_val = self.bio.value
         view = UpdateProfileSelectView(
             age=age,
@@ -341,7 +365,7 @@ class UpdateProfileModal(Modal, title="Update Your Profile Information"):
         )
         await interaction.response.send_message("Now please update your additional profile options:", view=view, ephemeral=True)
 
-# Update Select View: Prepopulate current select values
+# Update Select View: Prepopulate current select options for updating
 class UpdateLookingForSelect(Select):
     def __init__(self, default: str = None):
         options = [
@@ -475,9 +499,7 @@ async def update_profile(interaction: discord.Interaction):
     if not profile:
         await interaction.response.send_message("You don't have a profile yet. Use /create_profile first.", ephemeral=True)
         return
-    # Extract current profile values before closing the session.
     with session_scope() as session:
-        # Re-query the profile to ensure it's fully loaded.
         profile = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id)).first()
         default_age = profile.age
         default_bio = profile.bio
