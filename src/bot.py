@@ -116,7 +116,6 @@ def get_user_profile(discord_id: str) -> Optional[UserProfile]:
 
 def create_user_profile(discord_id: str, age: int, gender: str, bio: str, looking_for: str,
                         attracted_genders: List[str], preferred_min_age: int, preferred_max_age: int) -> UserProfile:
-    # Convert string values to GenderEnum objects
     gender_enum_val = GenderEnum(gender)
     attracted_enum_vals = [GenderEnum(item) for item in attracted_genders]
     profile = UserProfile(
@@ -209,9 +208,9 @@ class MyBot(discord.Client):
 bot = MyBot(intents=intents)
 
 # ─────────────────────────────────────────────
-# UI Components for Profile Setup and Matching
+# UI Components for Profile Creation and Update
 
-# Modal to collect initial profile info
+# Creation Modal: Collect numeric and text inputs
 class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
     current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
     bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
@@ -230,7 +229,7 @@ class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
         view = ProfileSelectView(age=age, bio=bio_val, min_age=min_age_val, max_age=max_age_val)
         await interaction.response.send_message("Now please select your additional profile options:", view=view, ephemeral=True)
 
-# View with Select menus for remaining profile options
+# Creation Select View: Collect Looking For, Gender, and Attracted options
 class LookingForSelect(Select):
     def __init__(self):
         options = [
@@ -282,14 +281,12 @@ class ProfileSelectView(View):
         self.add_item(LookingForSelect())
         self.add_item(GenderSelect())
         self.add_item(AttractedSelect())
-        # Remove duplicate button: Only use the decorated confirm button below.
     
     @discord.ui.button(label="Confirm Profile", style=discord.ButtonStyle.green)
     async def confirm_profile(self, interaction: discord.Interaction, button: Button):
         if not self.looking_for or not self.gender or not self.attracted:
             await interaction.response.send_message("Please complete all selections before confirming.", ephemeral=True)
             return
-        # Check for existing profile
         if get_user_profile(str(interaction.user.id)):
             await interaction.response.send_message("You already have a profile. Use /update_profile to modify it.", ephemeral=True)
             return
@@ -306,7 +303,123 @@ class ProfileSelectView(View):
         await interaction.response.send_message("Profile created successfully!", ephemeral=True)
         self.stop()
 
-# Standard matching view
+# Update Modal: Prepopulate current numeric/text info
+class UpdateProfileModal(Modal, title="Update Your Profile Information"):
+    current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
+    bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
+    min_age = TextInput(label="Minimum Preferred Age", placeholder="Enter minimum preferred age", required=True)
+    max_age = TextInput(label="Maximum Preferred Age", placeholder="Enter maximum preferred age", required=True)
+    
+    def __init__(self, default_age: int, default_bio: str, default_min_age: int, default_max_age: int,
+                 default_looking_for: str, default_gender: str, default_attracted: List[str]):
+        super().__init__()
+        self.current_age.default = str(default_age)
+        self.bio.default = default_bio
+        self.min_age.default = str(default_min_age)
+        self.max_age.default = str(default_max_age)
+        self.default_looking_for = default_looking_for
+        self.default_gender = default_gender
+        self.default_attracted = default_attracted
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            age = int(self.current_age.value)
+            min_age_val = int(self.min_age.value)
+            max_age_val = int(self.max_age.value)
+        except ValueError:
+            await interaction.response.send_message("Age fields must be valid numbers.", ephemeral=True)
+            return
+        bio_val = self.bio.value
+        view = UpdateProfileSelectView(
+            age=age,
+            bio=bio_val,
+            min_age=min_age_val,
+            max_age=max_age_val,
+            default_looking_for=self.default_looking_for,
+            default_gender=self.default_gender,
+            default_attracted=self.default_attracted
+        )
+        await interaction.response.send_message("Now please update your additional profile options:", view=view, ephemeral=True)
+
+# Update Select View: Prepopulate current select values
+class UpdateLookingForSelect(Select):
+    def __init__(self, default: str = None):
+        options = [
+            discord.SelectOption(label="Dating", value="Dating", default=(default=="Dating")),
+            discord.SelectOption(label="Friends", value="Friends", default=(default=="Friends")),
+            discord.SelectOption(label="Prom Night", value="Prom Night", default=(default=="Prom Night"))
+        ]
+        super().__init__(placeholder="What are you looking for?", min_values=1, max_values=1, options=options)
+    async def callback(self, interaction: discord.Interaction):
+        self.view.looking_for = self.values[0]
+        await interaction.response.defer()
+
+class UpdateGenderSelect(Select):
+    def __init__(self, default: str = None):
+        options = [
+            discord.SelectOption(label="Male", value="Male", default=(default=="Male")),
+            discord.SelectOption(label="Female", value="Female", default=(default=="Female")),
+            discord.SelectOption(label="Trans", value="Trans", default=(default=="Trans")),
+            discord.SelectOption(label="Non-Binary", value="Non-Binary", default=(default=="Non-Binary"))
+        ]
+        super().__init__(placeholder="Select your gender", min_values=1, max_values=1, options=options)
+    async def callback(self, interaction: discord.Interaction):
+        self.view.gender = self.values[0]
+        await interaction.response.defer()
+
+class UpdateAttractedSelect(Select):
+    def __init__(self, default: List[str] = None):
+        default = default or []
+        options = [
+            discord.SelectOption(label="Male", value="Male", default=("Male" in default)),
+            discord.SelectOption(label="Female", value="Female", default=("Female" in default)),
+            discord.SelectOption(label="Trans", value="Trans", default=("Trans" in default)),
+            discord.SelectOption(label="Non-Binary", value="Non-Binary", default=("Non-Binary" in default))
+        ]
+        super().__init__(placeholder="Select genders you're attracted to", min_values=1, max_values=4, options=options)
+    async def callback(self, interaction: discord.Interaction):
+        self.view.attracted = self.values
+        await interaction.response.defer()
+
+class UpdateProfileSelectView(View):
+    def __init__(self, age: int, bio: str, min_age: int, max_age: int,
+                 default_looking_for: str, default_gender: str, default_attracted: List[str], timeout=180):
+        super().__init__(timeout=timeout)
+        self.age = age
+        self.bio = bio
+        self.min_age = min_age
+        self.max_age = max_age
+        self.looking_for: Optional[str] = default_looking_for
+        self.gender: Optional[str] = default_gender
+        self.attracted: Optional[List[str]] = default_attracted
+        self.add_item(UpdateLookingForSelect(default_looking_for))
+        self.add_item(UpdateGenderSelect(default_gender))
+        self.add_item(UpdateAttractedSelect(default_attracted))
+    
+    @discord.ui.button(label="Confirm Profile Update", style=discord.ButtonStyle.green)
+    async def confirm_profile(self, interaction: discord.Interaction, button: Button):
+        if not self.looking_for or not self.gender or not self.attracted:
+            await interaction.response.send_message("Please complete all selections before confirming.", ephemeral=True)
+            return
+        updated = update_user_profile(
+            str(interaction.user.id),
+            age=self.age,
+            bio=self.bio,
+            looking_for=self.looking_for,
+            preferred_min_age=self.min_age,
+            preferred_max_age=self.max_age,
+            gender=self.gender,
+            attracted_genders=self.attracted
+        )
+        if not updated:
+            await interaction.response.send_message("Failed to update profile.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Profile updated successfully!", ephemeral=True)
+        self.stop()
+
+# ─────────────────────────────────────────────
+# Standard Matching View
+
 class MatchView(View):
     def __init__(self, user: UserProfile):
         super().__init__(timeout=180)
@@ -357,30 +470,32 @@ async def create_profile(interaction: discord.Interaction):
     await interaction.response.send_modal(ProfileInfoModal())
 
 @bot.tree.command(name="update_profile", description="Update your dating profile.")
-@app_commands.describe(
-    age="Your new age",
-    bio="Your updated bio",
-    looking_for="What you're looking for (e.g., Dating, Friends, Prom Night)",
-    preferred_min_age="New minimum preferred age",
-    preferred_max_age="New maximum preferred age",
-    gender="Your gender",
-    attracted="Genders you're attracted to (comma-separated, e.g., Male,Female)"
-)
-async def update_profile(interaction: discord.Interaction, age: int, bio: str, looking_for: str,
-                         preferred_min_age: int, preferred_max_age: int, gender: str, attracted: str):
-    attracted_list = [item.strip() for item in attracted.split(",") if item.strip()]
-    updated = update_user_profile(str(interaction.user.id),
-                                  age=age,
-                                  bio=bio,
-                                  looking_for=looking_for,
-                                  preferred_min_age=preferred_min_age,
-                                  preferred_max_age=preferred_max_age,
-                                  gender=gender,
-                                  attracted_genders=attracted_list)
-    if not updated:
+async def update_profile(interaction: discord.Interaction):
+    profile = get_user_profile(str(interaction.user.id))
+    if not profile:
         await interaction.response.send_message("You don't have a profile yet. Use /create_profile first.", ephemeral=True)
-    else:
-        await interaction.response.send_message("Profile updated successfully!", ephemeral=True)
+        return
+    # Extract current profile values before closing the session.
+    with session_scope() as session:
+        # Re-query the profile to ensure it's fully loaded.
+        profile = session.query(UserProfile).filter_by(discord_id=str(interaction.user.id)).first()
+        default_age = profile.age
+        default_bio = profile.bio
+        default_min_age = profile.preferred_min_age
+        default_max_age = profile.preferred_max_age
+        default_looking_for = profile.looking_for
+        default_gender = profile.gender.value
+        default_attracted = [x.value for x in profile.attracted_genders]
+    modal = UpdateProfileModal(
+        default_age=default_age,
+        default_bio=default_bio,
+        default_min_age=default_min_age,
+        default_max_age=default_max_age,
+        default_looking_for=default_looking_for,
+        default_gender=default_gender,
+        default_attracted=default_attracted
+    )
+    await interaction.response.send_modal(modal)
 
 @bot.tree.command(name="delete_profile", description="Delete your dating profile.")
 async def delete_profile(interaction: discord.Interaction):
