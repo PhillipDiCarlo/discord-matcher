@@ -1,5 +1,8 @@
-discord.py>=2.0
-SQLAlchemy>=1.4
-asyncpg
+discord.py
 python-dotenv
+SQLAlchemy
 psycopg2-binary
+pika
+pycountry
+rapidfuzz
+geopy

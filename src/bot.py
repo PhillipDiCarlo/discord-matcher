@@ -1,9 +1,11 @@
 import os
 import logging
 import asyncio
+import json
 from typing import List, Optional
 from contextlib import contextmanager
 import enum
+import pika
 
 import discord
 from discord import app_commands, TextStyle
@@ -21,7 +23,8 @@ from sqlalchemy import (
     ForeignKey,
     func,
     Enum as SQLAlchemyEnum,
-    UniqueConstraint
+    UniqueConstraint,
+    Float
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -90,7 +93,6 @@ def to_gender_enum(value: str) -> GenderEnum:
 
 # ─────────────────────────────────────────────
 # Update the models to be guild-specific.
-
 class UserProfile(Base):
     __tablename__ = 'user_profiles'
     id = Column(Integer, primary_key=True)
@@ -105,13 +107,19 @@ class UserProfile(Base):
     preferred_min_age = Column(Integer, nullable=False, default=18)
     preferred_max_age = Column(Integer, nullable=False, default=100)
     matched_with = Column(String, nullable=True)  # This stores the discord_id of the matched profile.
+    # New fields for actual location and matching preference:
+    country = Column(String, nullable=True)
+    state = Column(String, nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    location_preference = Column(String, nullable=False, default="Anywhere")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 class Swipe(Base):
     __tablename__ = 'swipes'
     id = Column(Integer, primary_key=True)
-    guild_id = Column(String, nullable=False)  # New column to scope swipes to a guild.
+    guild_id = Column(String, nullable=False)  # Scope swipes to a guild.
     swiper_id = Column(String, nullable=False)  # Reference to the user's discord_id.
     swiped_id = Column(String, nullable=False)
     right_swipe = Column(Boolean, nullable=False)
@@ -123,7 +131,6 @@ logger.info("Database tables created.")
 
 # ─────────────────────────────────────────────
 # Synchronous Database Helper Functions
-
 def get_user_profile(discord_id: str, guild_id: str) -> Optional[UserProfile]:
     with session_scope() as session:
         return session.query(UserProfile).filter_by(discord_id=discord_id, guild_id=guild_id).first()
@@ -141,7 +148,8 @@ def create_user_profile(discord_id: str, guild_id: str, age: int, gender: str, b
         looking_for=looking_for,
         attracted_genders=attracted_enum_vals,
         preferred_min_age=preferred_min_age,
-        preferred_max_age=preferred_max_age
+        preferred_max_age=preferred_max_age,
+        location_preference="Anywhere"
     )
     with session_scope() as session:
         session.add(profile)
@@ -231,38 +239,66 @@ def get_next_candidate(user: UserProfile) -> Optional[UserProfile]:
     return None
 
 # ─────────────────────────────────────────────
-# Discord Bot Setup
-
-intents = discord.Intents.default()
-intents.members = True
-
-class MyBot(discord.Client):
-    def __init__(self, *, intents: discord.Intents):
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
+# RabbitMQ Publisher for Location Updates
+def send_location_update(discord_id: str, guild_id: str, raw_country: str, raw_state: str):
+    rabbitmq_host = os.getenv("RABBITMQ_HOST", "localhost")
+    rabbitmq_port = int(os.getenv("RABBITMQ_PORT", 5672))
+    rabbitmq_username = os.getenv("RABBITMQ_USERNAME", "guest")
+    rabbitmq_password = os.getenv("RABBITMQ_PASSWORD", "guest")
+    rabbitmq_vhost = os.getenv("RABBITMQ_VHOST", "/")
+    queue_name = os.getenv("RABBITMQ_QUEUE_NAME", "location_updates")
     
-    async def setup_hook(self):
-        await self.tree.sync()
-        logger.info("Slash commands synced.")
-
-bot = MyBot(intents=intents)
+    credentials = pika.PlainCredentials(rabbitmq_username, rabbitmq_password)
+    connection_params = pika.ConnectionParameters(
+        host=rabbitmq_host,
+        port=rabbitmq_port,
+        virtual_host=rabbitmq_vhost,
+        credentials=credentials
+    )
+    
+    try:
+        connection = pika.BlockingConnection(connection_params)
+        channel = connection.channel()
+        channel.queue_declare(queue=queue_name, durable=True)
+        message = {
+            "discord_id": discord_id,
+            "guild_id": guild_id,
+            "raw_country": raw_country,
+            "raw_state": raw_state
+        }
+        channel.basic_publish(
+            exchange="",
+            routing_key=queue_name,
+            body=json.dumps(message),
+            properties=pika.BasicProperties(delivery_mode=2)  # persistent message
+        )
+        connection.close()
+        logger.info(f"Published location update for DiscordID: {discord_id}")
+    except Exception as e:
+        logger.error(f"Failed to publish location update: {e}")
 
 # ─────────────────────────────────────────────
 # UI Components for Profile Creation and Update
 
+# Note: To reduce the number of modal inputs to 5, we combine min and max age into one input.
 class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
     current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
     bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
-    min_age = TextInput(label="Minimum Preferred Age", placeholder="Enter minimum preferred age", required=True)
-    max_age = TextInput(label="Maximum Preferred Age", placeholder="Enter maximum preferred age", required=True)
+    preferred_age_range = TextInput(label="Preferred Age Range", placeholder="Enter your preferred age range (e.g., 18-30)", required=True)
+    country = TextInput(label="Country", placeholder="Enter your country", required=True)
+    state = TextInput(label="State/Province", placeholder="Enter your state/province (optional)", required=False)
     
     async def on_submit(self, interaction: discord.Interaction):
         try:
             age = int(self.current_age.value)
-            min_age_val = int(self.min_age.value)
-            max_age_val = int(self.max_age.value)
+            # Parse preferred age range
+            try:
+                min_age_val, max_age_val = map(lambda x: int(x.strip()), self.preferred_age_range.value.split("-"))
+            except Exception:
+                await interaction.response.send_message("Preferred age range must be in format 'min-max'.", ephemeral=True)
+                return
         except ValueError:
-            await interaction.response.send_message("Age fields must be valid numbers.", ephemeral=True)
+            await interaction.response.send_message("Current age must be a valid number.", ephemeral=True)
             return
         if age < 18 or age > 100:
             await interaction.response.send_message("Your age must be between 18 and 100.", ephemeral=True)
@@ -277,9 +313,149 @@ class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
             await interaction.response.send_message("Minimum preferred age cannot be greater than maximum preferred age.", ephemeral=True)
             return
         bio_val = self.bio.value
-        view = ProfileSelectView(age=age, bio=bio_val, min_age=min_age_val, max_age=max_age_val)
-        await interaction.response.send_message("Now please select your additional profile options:", view=view, ephemeral=True)
+        raw_country = self.country.value
+        raw_state = self.state.value
 
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        
+        if get_user_profile(str(interaction.user.id), guild_id):
+            await interaction.response.send_message("You already have a profile. Use /update_profile to modify it.", ephemeral=True)
+            return
+
+        # Create profile with placeholder values for gender, looking_for, attracted_genders.
+        create_user_profile(
+            discord_id=str(interaction.user.id),
+            guild_id=guild_id,
+            age=age,
+            gender="Male",         # Placeholder; to be updated via follow-up view.
+            bio=bio_val,
+            looking_for="Dating",    # Placeholder; to be updated via follow-up view.
+            attracted_genders=["Female"],  # Placeholder; to be updated via follow-up view.
+            preferred_min_age=min_age_val,
+            preferred_max_age=max_age_val
+        )
+        # Publish location update so the location service can update the profile.
+        send_location_update(str(interaction.user.id), guild_id, raw_country, raw_state)
+        await interaction.response.send_message("Profile created successfully!", ephemeral=True)
+        # Send follow-up view to let user select their gender and attraction preferences.
+        await interaction.followup.send(
+            "Please complete your profile by selecting your gender and the genders you're attracted to.",
+            view=UpdateProfileSelectView(age, bio_val, min_age_val, max_age_val, default_looking_for="Dating", default_gender="Male", default_attracted=["Female"]),
+            ephemeral=True
+        )
+
+class UpdateProfileModal(Modal, title="Update Your Profile Information"):
+    current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
+    bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
+    preferred_age_range = TextInput(label="Preferred Age Range", placeholder="Enter your preferred age range (e.g., 18-30)", required=True)
+    country = TextInput(label="Country", placeholder="Enter your country", required=True)
+    state = TextInput(label="State/Province", placeholder="Enter your state/province (optional)", required=False)
+    
+    def __init__(self, default_age: int, default_bio: str, default_min_age: int, default_max_age: int,
+                 default_looking_for: str, default_gender: str, default_attracted: List[str],
+                 default_country: str = "", default_state: str = ""):
+        super().__init__()
+        self.current_age.default = str(default_age)
+        self.bio.default = default_bio
+        self.preferred_age_range.default = f"{default_min_age}-{default_max_age}"
+        self.country.default = default_country
+        self.state.default = default_state
+        self.default_looking_for = default_looking_for
+        self.default_gender = default_gender
+        self.default_attracted = default_attracted
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            age = int(self.current_age.value)
+            try:
+                min_age_val, max_age_val = map(lambda x: int(x.strip()), self.preferred_age_range.value.split("-"))
+            except Exception:
+                await interaction.response.send_message("Preferred age range must be in format 'min-max'.", ephemeral=True)
+                return
+        except ValueError:
+            await interaction.response.send_message("Current age must be a valid number.", ephemeral=True)
+            return
+        if age < 18 or age > 100:
+            await interaction.response.send_message("Your age must be between 18 and 100.", ephemeral=True)
+            return
+        if min_age_val < 18:
+            await interaction.response.send_message("Minimum preferred age must be at least 18.", ephemeral=True)
+            return
+        if max_age_val > 100:
+            await interaction.response.send_message("Maximum preferred age must be 100 or less.", ephemeral=True)
+            return
+        if min_age_val > max_age_val:
+            await interaction.response.send_message("Minimum preferred age cannot be greater than maximum preferred age.", ephemeral=True)
+            return
+        
+        bio_val = self.bio.value
+        raw_country = self.country.value
+        raw_state = self.state.value
+        
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        
+        # Update the user's basic profile info.
+        updated = update_user_profile(
+            str(interaction.user.id),
+            guild_id=guild_id,
+            age=age,
+            bio=bio_val
+            # Other fields (like looking_for, gender, attracted_genders) will be updated via follow-up view.
+        )
+        # Publish location update.
+        send_location_update(str(interaction.user.id), guild_id, raw_country, raw_state)
+        if updated:
+            await interaction.response.send_message("Profile updated successfully!", ephemeral=True)
+            # Show follow-up view to update gender and attraction preferences.
+            await interaction.followup.send(
+                "Please update your gender and attraction preferences.",
+                view=UpdateProfileSelectView(age, bio_val, min_age_val, max_age_val, default_looking_for=self.default_looking_for, default_gender=self.default_gender, default_attracted=self.default_attracted),
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message("Failed to update profile.", ephemeral=True)
+
+# ─────────────────────────────────────────────
+# New Consolidated Settings UI for future settings updates.
+class LocationPreferenceSelect(Select):
+    def __init__(self, default="Anywhere"):
+        options = [
+            discord.SelectOption(label="State/Province", value="State/Province", description="Only match within your state/province"),
+            discord.SelectOption(label="Nearby", value="Nearby", description="Match with users no more than 500 miles away"),
+            discord.SelectOption(label="Same Country", value="Same Country", description="Only match with users from the same country"),
+            discord.SelectOption(label="Same Continent", value="Same Continent", description="Only match with users from the same continent"),
+            discord.SelectOption(label="Anywhere", value="Anywhere", description="No location restrictions", default=True)
+        ]
+        # Do not update the database immediately.
+        super().__init__(placeholder="Select your location preference", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        # Store the selection in the view for now.
+        self.view.selected_preference = self.values[0]
+        await interaction.response.defer()
+
+class ConfirmSettingsButton(Button):
+    def __init__(self):
+        super().__init__(label="Confirm Settings", style=discord.ButtonStyle.green)
+
+    async def callback(self, interaction: discord.Interaction):
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        preference = self.view.selected_preference
+        updated = update_user_profile(str(interaction.user.id), guild_id, location_preference=preference)
+        if updated:
+            await interaction.response.send_message(f"Settings updated! Location preference set to {preference}.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Failed to update settings.", ephemeral=True)
+
+class ConsolidatedSettingsView(View):
+    def __init__(self, timeout=180):
+        super().__init__(timeout=timeout)
+        self.selected_preference = "Anywhere"
+        self.add_item(LocationPreferenceSelect())
+        self.add_item(ConfirmSettingsButton())
+
+# ─────────────────────────────────────────────
+# Standard Matching and Profile Viewing UI Components
 class LookingForSelect(Select):
     def __init__(self):
         options = [
@@ -318,140 +494,15 @@ class AttractedSelect(Select):
         self.view.attracted = self.values
         await interaction.response.defer()
 
-class ProfileSelectView(View):
-    def __init__(self, age: int, bio: str, min_age: int, max_age: int, timeout=180):
-        super().__init__(timeout=timeout)
-        self.age = age
-        self.bio = bio
-        self.min_age = min_age
-        self.max_age = max_age
-        self.looking_for: Optional[str] = None
-        self.gender: Optional[str] = None
-        self.attracted: Optional[List[str]] = None
-        self.add_item(LookingForSelect())
-        self.add_item(GenderSelect())
-        self.add_item(AttractedSelect())
-    
-    @discord.ui.button(label="Confirm Profile", style=discord.ButtonStyle.green)
-    async def confirm_profile(self, interaction: discord.Interaction, button: Button):
-        if not self.looking_for or not self.gender or not self.attracted:
-            await interaction.response.send_message("Please complete all selections before confirming.", ephemeral=True)
-            return
-        # Obtain guild id from the interaction.
-        guild_id = str(interaction.guild.id) if interaction.guild else None
-        if get_user_profile(str(interaction.user.id), guild_id):
-            await interaction.response.send_message("You already have a profile. Use /update_profile to modify it.", ephemeral=True)
-            return
-        create_user_profile(
-            discord_id=str(interaction.user.id),
-            guild_id=guild_id,
-            age=self.age,
-            gender=self.gender,
-            bio=self.bio,
-            looking_for=self.looking_for,
-            attracted_genders=self.attracted,
-            preferred_min_age=self.min_age,
-            preferred_max_age=self.max_age
-        )
-        await interaction.response.send_message("Profile created successfully!", ephemeral=True)
-        self.stop()
-
-class UpdateProfileModal(Modal, title="Update Your Profile Information"):
-    current_age = TextInput(label="Current Age", placeholder="Enter your current age", required=True)
-    bio = TextInput(label="Bio", style=TextStyle.paragraph, placeholder="Write a short bio", required=True)
-    min_age = TextInput(label="Minimum Preferred Age", placeholder="Enter minimum preferred age", required=True)
-    max_age = TextInput(label="Maximum Preferred Age", placeholder="Enter maximum preferred age", required=True)
-    
-    def __init__(self, default_age: int, default_bio: str, default_min_age: int, default_max_age: int,
-                 default_looking_for: str, default_gender: str, default_attracted: List[str]):
-        super().__init__()
-        self.current_age.default = str(default_age)
-        self.bio.default = default_bio
-        self.min_age.default = str(default_min_age)
-        self.max_age.default = str(default_max_age)
-        self.default_looking_for = default_looking_for
-        self.default_gender = default_gender
-        self.default_attracted = default_attracted
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            age = int(self.current_age.value)
-            min_age_val = int(self.min_age.value)
-            max_age_val = int(self.max_age.value)
-        except ValueError:
-            await interaction.response.send_message("Age fields must be valid numbers.", ephemeral=True)
-            return
-        if age < 18 or age > 100:
-            await interaction.response.send_message("Your age must be between 18 and 100.", ephemeral=True)
-            return
-        if min_age_val < 18:
-            await interaction.response.send_message("Minimum preferred age must be at least 18.", ephemeral=True)
-            return
-        if max_age_val > 100:
-            await interaction.response.send_message("Maximum preferred age must be 100 or less.", ephemeral=True)
-            return
-        if min_age_val > max_age_val:
-            await interaction.response.send_message("Minimum preferred age cannot be greater than maximum preferred age.", ephemeral=True)
-            return
-        bio_val = self.bio.value
-        view = UpdateProfileSelectView(
-            age=age,
-            bio=bio_val,
-            min_age=min_age_val,
-            max_age=max_age_val,
-            default_looking_for=self.default_looking_for,
-            default_gender=self.default_gender,
-            default_attracted=self.default_attracted
-        )
-        await interaction.response.send_message("Now please update your additional profile options:", view=view, ephemeral=True)
-
-class UpdateLookingForSelect(Select):
-    def __init__(self, default: str = None):
-        options = [
-            discord.SelectOption(label="Dating", value="Dating", default=(default=="Dating")),
-            discord.SelectOption(label="Friends", value="Friends", default=(default=="Friends")),
-            discord.SelectOption(label="Prom Night", value="Prom Night", default=(default=="Prom Night"))
-        ]
-        super().__init__(placeholder="What are you looking for?", min_values=1, max_values=1, options=options)
-    async def callback(self, interaction: discord.Interaction):
-        self.view.looking_for = self.values[0]
-        await interaction.response.defer()
-
-class UpdateGenderSelect(Select):
-    def __init__(self, default: str = None):
-        options = [
-            discord.SelectOption(label="Male", value="Male", default=(default=="Male")),
-            discord.SelectOption(label="Female", value="Female", default=(default=="Female")),
-            discord.SelectOption(label="Trans", value="Trans", default=(default=="Trans")),
-            discord.SelectOption(label="Non-Binary", value="Non-Binary", default=(default=="Non-Binary"))
-        ]
-        super().__init__(placeholder="Select your gender", min_values=1, max_values=1, options=options)
-    async def callback(self, interaction: discord.Interaction):
-        self.view.gender = self.values[0]
-        await interaction.response.defer()
-
-class UpdateAttractedSelect(Select):
-    def __init__(self, default: List[str] = None):
-        default = default or []
-        options = [
-            discord.SelectOption(label="Male", value="Male", default=("Male" in default)),
-            discord.SelectOption(label="Female", value="Female", default=("Female" in default)),
-            discord.SelectOption(label="Trans", value="Trans", default=("Trans" in default)),
-            discord.SelectOption(label="Non-Binary", value="Non-Binary", default=("Non-Binary" in default))
-        ]
-        super().__init__(placeholder="Select genders you're attracted to", min_values=1, max_values=4, options=options)
-    async def callback(self, interaction: discord.Interaction):
-        self.view.attracted = self.values
-        await interaction.response.defer()
-
+# This view is used in the follow-up step after profile creation or update.
 class UpdateProfileSelectView(View):
-    def __init__(self, age: int, bio: str, min_age: int, max_age: int,
+    def __init__(self, age: int, bio: str, preferred_min_age: int, preferred_max_age: int,
                  default_looking_for: str, default_gender: str, default_attracted: List[str], timeout=180):
         super().__init__(timeout=timeout)
         self.age = age
         self.bio = bio
-        self.min_age = min_age
-        self.max_age = max_age
+        self.preferred_min_age = preferred_min_age
+        self.preferred_max_age = preferred_max_age
         self.looking_for: Optional[str] = default_looking_for
         self.gender: Optional[str] = default_gender
         self.attracted: Optional[List[str]] = default_attracted
@@ -471,8 +522,8 @@ class UpdateProfileSelectView(View):
             age=self.age,
             bio=self.bio,
             looking_for=self.looking_for,
-            preferred_min_age=self.min_age,
-            preferred_max_age=self.max_age,
+            preferred_min_age=self.preferred_min_age,
+            preferred_max_age=self.preferred_max_age,
             gender=self.gender,
             attracted_genders=self.attracted
         )
@@ -481,6 +532,50 @@ class UpdateProfileSelectView(View):
         else:
             await interaction.response.send_message("Profile updated successfully!", ephemeral=True)
         self.stop()
+
+class UpdateLookingForSelect(Select):
+    def __init__(self, default: str = None):
+        options = [
+            discord.SelectOption(label="Dating", value="Dating", default=(default=="Dating")),
+            discord.SelectOption(label="Friends", value="Friends", default=(default=="Friends")),
+            discord.SelectOption(label="Prom Night", value="Prom Night", default=(default=="Prom Night"))
+        ]
+        super().__init__(placeholder="What are you looking for?", min_values=1, max_values=1, options=options)
+    async def callback(self, interaction: discord.Interaction):
+        self.view.looking_for = self.values[0]
+        await interaction.response.defer()
+
+class UpdateGenderSelect(Select):
+    def __init__(self, default: str = None):
+        # Normalize the default value: convert "NonBinary" from the database to "Non-Binary" for display.
+        normalized_default = "Non-Binary" if default == "NonBinary" else default
+        options = [
+            discord.SelectOption(label="Male", value="Male", default=(normalized_default == "Male")),
+            discord.SelectOption(label="Female", value="Female", default=(normalized_default == "Female")),
+            discord.SelectOption(label="Trans", value="Trans", default=(normalized_default == "Trans")),
+            discord.SelectOption(label="Non-Binary", value="Non-Binary", default=(normalized_default == "Non-Binary"))
+        ]
+        super().__init__(placeholder="Select your gender", min_values=1, max_values=1, options=options)
+    
+    async def callback(self, interaction: discord.Interaction):
+        self.view.gender = self.values[0]
+        await interaction.response.defer()
+
+class UpdateAttractedSelect(Select):
+    def __init__(self, default: List[str] = None):
+        default = default or []
+        normalized_default = ["Non-Binary" if g == "NonBinary" else g for g in default]
+        options = [
+            discord.SelectOption(label="Male", value="Male", default=("Male" in normalized_default)),
+            discord.SelectOption(label="Female", value="Female", default=("Female" in normalized_default)),
+            discord.SelectOption(label="Trans", value="Trans", default=("Trans" in normalized_default)),
+            discord.SelectOption(label="Non-Binary", value="Non-Binary", default=("Non-Binary" in normalized_default))
+        ]
+        super().__init__(placeholder="Select genders you're attracted to", min_values=1, max_values=4, options=options)
+    
+    async def callback(self, interaction: discord.Interaction):
+        self.view.attracted = self.values
+        await interaction.response.defer()
 
 # ─────────────────────────────────────────────
 # A simple view for DM messages with a button to view profile.
@@ -491,7 +586,6 @@ class ProfileButtonView(View):
 
 # ─────────────────────────────────────────────
 # Standard Matching View
-
 class MatchView(View):
     def __init__(self, user_id: str, guild_id: str):
         super().__init__(timeout=180)
@@ -535,10 +629,14 @@ class MatchView(View):
             candidate_user = await interaction.client.fetch_user(candidate.discord_id)
 
         display_gender = "Non-Binary" if candidate.gender.value == "NonBinary" else candidate.gender.value
+        country = candidate.country if candidate.country else "N/A"
+        state = candidate.state if candidate.state else "N/A"
 
         embed = discord.Embed(title="Potential Match", color=discord.Color.blue())
         embed.add_field(name="Age", value=str(candidate.age))
         embed.add_field(name="Gender", value=display_gender)
+        embed.add_field(name="Country", value=country, inline=True)
+        embed.add_field(name="State/Province", value=state, inline=True)
         embed.add_field(name="Looking for", value=candidate.looking_for)
         embed.add_field(name="Bio", value=candidate.bio, inline=False)
         embed.set_author(
@@ -601,8 +699,23 @@ class MatchView(View):
         await self.update_candidate(interaction)
 
 # ─────────────────────────────────────────────
-# Slash Commands
+# Discord Bot Setup
+intents = discord.Intents.default()
+intents.members = True
 
+class MyBot(discord.Client):
+    def __init__(self, *, intents: discord.Intents):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+    
+    async def setup_hook(self):
+        await self.tree.sync()
+        logger.info("Slash commands synced.")
+
+bot = MyBot(intents=intents)
+
+# ─────────────────────────────────────────────
+# Slash Commands
 @bot.tree.command(name="create_profile", description="Create your dating profile.")
 async def create_profile(interaction: discord.Interaction):
     await interaction.response.send_modal(ProfileInfoModal())
@@ -623,6 +736,8 @@ async def update_profile(interaction: discord.Interaction):
         default_looking_for = profile.looking_for
         default_gender = profile.gender.value
         default_attracted = [x.value for x in profile.attracted_genders]
+        default_country = profile.country if profile.country else ""
+        default_state = profile.state if profile.state else ""
     modal = UpdateProfileModal(
         default_age=default_age,
         default_bio=default_bio,
@@ -630,7 +745,9 @@ async def update_profile(interaction: discord.Interaction):
         default_max_age=default_max_age,
         default_looking_for=default_looking_for,
         default_gender=default_gender,
-        default_attracted=default_attracted
+        default_attracted=default_attracted,
+        default_country=default_country,
+        default_state=default_state
     )
     await interaction.response.send_modal(modal)
 
@@ -688,6 +805,10 @@ async def unmatch(interaction: discord.Interaction):
         if partner:
             partner.matched_with = None
     await interaction.response.send_message("Match removed. Both users are now back in the matching pool.", ephemeral=True)
+
+@bot.tree.command(name="settings", description="Update your personal settings, including location preferences.")
+async def settings(interaction: discord.Interaction):
+    await interaction.response.send_message("Select your settings:", view=ConsolidatedSettingsView(), ephemeral=True)
 
 @bot.event
 async def on_ready():

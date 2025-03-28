@@ -11,6 +11,8 @@ function GetVersion {
 # Menu options
 $menu = @"
 1. Bot
+2. Location Service
+3. All
 0. Exit
 "@
 
@@ -60,12 +62,15 @@ BuildDockerImages
 # Switch case to handle the user's choice of Docker images to tag and push
 switch ($choice) {
     1 {
-        TagAndPush "discord-matchmaker-bot" $version
+        TagAndPush "bot" $version
     }
-    # 3 {
-    #     TagAndPush "discord-bot" $version
-    #     TagAndPush "vrc-online-checker" $version
-    # }
+    2 {
+        TagAndPush "location_service" $version
+    }
+    3 {
+        TagAndPush "bot" $version
+        TagAndPush "location_service" $version
+    }
     0 {
         Write-Host "Exiting script."
         exit 0

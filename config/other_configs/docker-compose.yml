@@ -3,7 +3,7 @@ services:
     build:
       context: ../../
       dockerfile: config/docker-img/Dockerfile-bot
-    image: discord-matchmaker-bot  # <-- Explicitly set image name
+    image: bot  # <-- Explicitly set image name
     ports:
       - "5003:5003"
     environment:
@@ -12,3 +12,22 @@ services:
       - POSTGRES_DB=${POSTGRES_DB}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+
+  location-service:
+    build:
+      context: ../../
+      dockerfile: config/docker-img/Dockerfile-location_service
+    image: location_service  # <-- Explicitly set image name
+    # ports:
+    #   - "5003:5003"
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - RABBITMQ_HOST=${RABBITMQ_HOST}
+      - RABBITMQ_PORT=${RABBITMQ_PORT}
+      - RABBITMQ_USERNAME=${RABBITMQ_USERNAME}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
+      - RABBITMQ_VHOST=/
+      - RABBITMQ_QUEUE_NAME=${RABBITMQ_VHOST}
