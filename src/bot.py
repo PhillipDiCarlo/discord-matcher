@@ -293,7 +293,7 @@ class ProfileInfoModal(Modal, title="Enter Your Profile Information"):
             age = int(self.current_age.value)
             # Parse preferred age range
             try:
-                min_age_val, max_age_val = map(int, self.preferred_age_range.value.split("-"))
+                min_age_val, max_age_val = map(lambda x: int(x.strip()), self.preferred_age_range.value.split("-"))
             except Exception:
                 await interaction.response.send_message("Preferred age range must be in format 'min-max'.", ephemeral=True)
                 return
@@ -368,7 +368,7 @@ class UpdateProfileModal(Modal, title="Update Your Profile Information"):
         try:
             age = int(self.current_age.value)
             try:
-                min_age_val, max_age_val = map(int, self.preferred_age_range.value.split("-"))
+                min_age_val, max_age_val = map(lambda x: int(x.strip()), self.preferred_age_range.value.split("-"))
             except Exception:
                 await interaction.response.send_message("Preferred age range must be in format 'min-max'.", ephemeral=True)
                 return
