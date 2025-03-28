@@ -699,7 +699,7 @@ async def how_to_use(interaction: discord.Interaction):
             "2. Once your profile is created, use `/start_matching` to begin swiping.\n"
             "3. If you find a match, both you and your match will be notified.\n"
             "4. You can update your profile anytime with `/update_profile` or delete it with `/delete_profile`.\n"
-            "5. If at any time you wish to unmatch with your match, you may do so with `/unmatch` which will allow both you and your previous match back into the pool. \n\n"
+            "5. If at any time you wish to unmatch with your match, you may do so with `/unmatch`. NOTE: You will not be able to rematch with them later. \n\n"
             "*Have fun and good luck!*"
         ),
         color=discord.Color.purple()
