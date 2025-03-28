@@ -7,6 +7,13 @@
             "request": "launch",
             "program": "${workspaceFolder}/src/bot.py",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "Python: Location Service",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/location_service.py",
+            "console": "integratedTerminal"
         }
     ]
 }
