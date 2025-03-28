@@ -689,6 +689,29 @@ async def unmatch(interaction: discord.Interaction):
             partner.matched_with = None
     await interaction.response.send_message("Match removed. Both users are now back in the matching pool.", ephemeral=True)
 
+@bot.tree.command(name="instruction_panel", description="Show instructions on how to get started with the bot.")
+async def how_to_use(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="Getting Started with the Bot",
+        description=(
+            "**Welcome! Here's how to begin using the matchmaking bot:**\n"
+            "1. Use `/create_profile` to set up your dating or friendship profile.\n"
+            "2. Once your profile is created, use `/start_matching` to begin swiping.\n"
+            "3. If you find a match, both you and your match will be notified.\n"
+            "4. You can update your profile anytime with `/update_profile` or delete it with `/delete_profile`.\n"
+            "5. If at any time you wish to unmatch with your match, you may do so with `/unmatch` which will allow both you and your previous match back into the pool. \n\n"
+            "*Have fun and good luck!*"
+        ),
+        color=discord.Color.purple()
+    )
+    embed.set_footer(
+        text="⚠️ This is an 18+ bot. Do not use this bot if you are under 18.\n"
+             "If you suspect someone under 18 is using the bot, please immediately notify a server moderator or admin."
+    )
+
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.event
 async def on_ready():
     logger.info(f"Bot is ready! Logged in as {bot.user} (ID: {bot.user.id})")
